@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🔥 OCR Từ Ảnh - Web</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@v5/dist/tesseract.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', Tahoma, sans-serif;
+      background: #1e1e1e;
+      color: #eee;
+      padding: 20px;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: #2a2a2a;
+      border-radius: 16px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+      font-size: 28px;
+    }
+    button {
+      padding: 14px 20px;
+      font-size: 16px;
+      font-weight: bold;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: 0.3s;
+    }
+    .btn-primary {
+      background: #00cc88;
+      color: white;
+      width: 100%;
+      margin-bottom: 20px;
+    }
+    .btn-primary:hover { background: #00b377; }
+    
+    .preview {
+      border: 2px dashed #666;
+      border-radius: 12px;
+      min-height: 280px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #222;
+      margin: 15px 0;
+      overflow: hidden;
+    }
+    .preview img {
+      max-width: 100%;
+      max-height: 280px;
+      object-fit: contain;
+    }
+    textarea {
+      width: 100%;
+      min-height: 220px;
+      background: #1e1e1e;
+      color: #fff;
+      border: 1px solid #555;
+      border-radius: 10px;
+      padding: 15px;
+      font-family: Consolas, monospace;
+      font-size: 15px;
+      resize: vertical;
+    }
+    .btn-group {
+      display: flex;
+      gap: 12px;
+      margin-top: 15px;
+    }
+    .status {
+      text-align: center;
+      margin-top: 15px;
+      padding: 10px;
+      border-radius: 8px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📸 OCR Nhận Diện Văn Bản Từ Ảnh</h1>
+    
+    <button class="btn-primary" id="openBtn">📂 Mở Ảnh Từ Máy</button>
+    
+    <p style="margin: 10px 0 5px 5px;">Ảnh Preview:</p>
+    <div class="preview" id="preview">
+      <span style="color:#888;">Chưa có ảnh nào</span>
+    </div>
+
+    <p style="margin: 15px 0 5px 5px;">📝 Kết quả nhận diện:</p>
+    <textarea id="result" readonly placeholder="Kết quả OCR sẽ hiện ở đây..."></textarea>
+
+    <div class="btn-group">
+      <button style="flex:1; background:#0078d4; color:white;" id="copyBtn">📋 Copy Text</button>
+      <button style="flex:1; background:#cc4444; color:white;" id="clearBtn">🗑️ Xóa</button>
+    </div>
+
+    <div class="status" id="status">Sẵn sàng - Nhấn nút để mở ảnh</div>
+  </div>
+
+  <input type="file" id="fileInput" accept="image/*" style="display:none">
+
+  <script>
+    const fileInput = document.getElementById('fileInput');
+    const openBtn = document.getElementById('openBtn');
+    const preview = document.getElementById('preview');
+    const resultText = document.getElementById('result');
+    const copyBtn = document.getElementById('copyBtn');
+    const clearBtn = document.getElementById('clearBtn');
+    const status = document.getElementById('status');
+
+    let currentImageURL = null;
+
+    openBtn.addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      status.textContent = "Đang xử lý...";
+      status.style.color = "#ffcc00";
+
+      // Preview
+      currentImageURL = URL.createObjectURL(file);
+      preview.innerHTML = `<img src="${currentImageURL}" alt="preview">`;
+
+      try {
+        // OCR using Tesseract.js
+        const { data: { text } } = await Tesseract.recognize(
+          file,
+          'vie+eng',  // hỗ trợ tiếng Việt + English
+          {
+            logger: m => {
+              if (m.status === 'recognizing text') {
+                status.textContent = `Đang nhận diện... ${Math.round(m.progress*100)}%`;
+              }
+            }
+          }
+        );
+
+        resultText.value = text.trim() || "Không tìm thấy văn bản nào.";
+        status.textContent = "✅ Hoàn thành";
+        status.style.color = "#00dd88";
+      } catch (err) {
+        console.error(err);
+        status.textContent = "❌ Lỗi khi xử lý OCR";
+        status.style.color = "#ff4444";
+      }
+    });
+
+    copyBtn.addEventListener('click', () => {
+      const text = resultText.value.trim();
+      if (text) {
+        navigator.clipboard.writeText(text).then(() => {
+          status.textContent = "✅ Đã copy vào clipboard!";
+          status.style.color = "#00dd88";
+        });
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      resultText.value = '';
+      preview.innerHTML = '<span style="color:#888;">Chưa có ảnh nào</span>';
+      if (currentImageURL) URL.revokeObjectURL(currentImageURL);
+      currentImageURL = null;
+      status.textContent = "Đã xóa tất cả";
+      status.style.color = "#aaa";
+    });
+  </script>
+</body>
+</html>
