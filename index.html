@@ -101,6 +101,59 @@
       border-radius: 8px;
       font-weight: bold;
     }
+    
+    /* Screenshot overlay */
+    #screenshotOverlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 9999;
+      cursor: crosshair;
+    }
+    
+    #selectionCanvas {
+      position: fixed;
+      top: 0;
+      left: 0;
+      z-index: 10000;
+      pointer-events: none;
+    }
+    
+    .selection-info {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.85);
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 10001;
+      display: flex;
+      gap: 15px;
+      align-items: center;
+    }
+    
+    .selection-info button {
+      padding: 8px 16px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+    
+    .btn-capture {
+      background: #00cc88;
+      color: white;
+    }
+    
+    .btn-cancel {
+      background: #cc4444;
+      color: white;
+    }
   </style>
 </head>
 <body>
@@ -130,7 +183,16 @@
 
   <input type="file" id="fileInput" accept="image/*" style="display:none">
   <canvas id="captureCanvas" style="display:none;"></canvas>
-  <video id="captureVideo" style="display:none;" autoplay></video>
+  <video id="captureVideo" style="display:none;" autoplay playsinline></video>
+  
+  <!-- Screenshot selection elements -->
+  <div id="screenshotOverlay" style="display:none;"></div>
+  <canvas id="selectionCanvas" style="display:none;"></canvas>
+  <div class="selection-info" id="selectionInfo" style="display:none;">
+    <span id="selectionText">Vùng: 0 x 0</span>
+    <button class="btn-capture" id="btnCapture">📸 Chụp</button>
+    <button class="btn-cancel" id="btnCancel">✖ Hủy</button>
+  </div>
 
   <script>
     const fileInput = document.getElementById('fileInput');
@@ -143,13 +205,38 @@
     const status = document.getElementById('status');
     const captureCanvas = document.getElementById('captureCanvas');
     const captureVideo = document.getElementById('captureVideo');
+    
+    // Selection elements
+    const screenshotOverlay = document.getElementById('screenshotOverlay');
+    const selectionCanvas = document.getElementById('selectionCanvas');
+    const selectionInfo = document.getElementById('selectionInfo');
+    const selectionText = document.getElementById('selectionText');
+    const btnCapture = document.getElementById('btnCapture');
+    const btnCancel = document.getElementById('btnCancel');
 
     let currentImageURL = null;
     let mediaStream = null;
+    let screenshotBlob = null;
+    let isSelecting = false;
+    let startX = 0, startY = 0;
+    let selX = 0, selY = 0, selW = 0, selH = 0;
+    let selCtx = null;
+
+    // Utility: Fix text - chỉ xuống dòng 1 lần như bình thường
+    function fixText(text) {
+      // Thay thế multiple spaces/tabs bằng 1 space
+      // Thay thế 2+ newlines liên tiếp bằng 1 newline
+      // Trim đầu và cuối
+      return text
+        .replace(/[ \t]+/g, ' ')           // multiple spaces/tabs → 1 space
+        .replace(/\n{3,}/g, '\n\n')       // 3+ newlines → 2 newlines
+        .replace(/ *\n */g, '\n')         // spaces trước/sau newline
+        .trim();
+    }
 
     openBtn.addEventListener('click', () => fileInput.click());
 
-    // Screenshot functionality
+    // Screenshot functionality với region selection
     screenshotBtn.addEventListener('click', async () => {
       try {
         status.textContent = "📸 Đang mở dialog chọn màn hình...";
@@ -157,7 +244,7 @@
         
         // Yêu cầu quyền capture màn hình
         mediaStream = await navigator.mediaDevices.getDisplayMedia({
-          video: { displaySurface: 'browser' }, // Ưu tiên browser/tab
+          video: { displaySurface: 'any' },
           audio: false
         });
 
@@ -170,12 +257,25 @@
           captureVideo.onloadedmetadata = resolve;
         });
         
-        // Chờ user dừng sharing (khi họ nhấn "Stop sharing" hoặc đóng tab)
-        mediaStream.getVideoTracks()[0].onended = async () => {
-          await captureFrame();
-        };
+        // Hiện overlay để chọn vùng
+        captureCanvas.width = captureVideo.videoWidth;
+        captureCanvas.height = captureVideo.videoHeight;
+        selectionCanvas.width = captureVideo.videoWidth;
+        selectionCanvas.height = captureVideo.videoHeight;
         
-        status.textContent = "⏳ Đang chờ bạn chọn vùng và dừng chia sẻ...";
+        // Vẽ ảnh lên canvas
+        selCtx = selectionCanvas.getContext('2d');
+        selCtx.drawImage(captureVideo, 0, 0);
+        
+        // Hiện overlay và controls
+        screenshotOverlay.style.display = 'block';
+        selectionCanvas.style.display = 'block';
+        selectionInfo.style.display = 'flex';
+        
+        // Setup selection events
+        setupSelection();
+        
+        status.textContent = "🖱️ Kéo chọn vùng cần chụp";
         
       } catch (err) {
         console.error(err);
@@ -189,69 +289,162 @@
       }
     });
 
-    async function captureFrame() {
+    function setupSelection() {
+      selectionCanvas.style.pointerEvents = 'auto';
+      
+      selectionCanvas.onmousedown = (e) => {
+        isSelecting = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        selX = startX;
+        selY = startY;
+        selW = 0;
+        selH = 0;
+      };
+      
+      selectionCanvas.onmousemove = (e) => {
+        if (!isSelecting) return;
+        
+        selW = e.clientX - startX;
+        selH = e.clientY - startY;
+        selX = selW < 0 ? e.clientX : startX;
+        selY = selH < 0 ? e.clientY : startY;
+        selW = Math.abs(selW);
+        selH = Math.abs(selH);
+        
+        // Redraw
+        selCtx.clearRect(0, 0, selectionCanvas.width, selectionCanvas.height);
+        selCtx.drawImage(captureVideo, 0, 0);
+        
+        // Vẽ vùng chọn
+        if (selW > 0 && selH > 0) {
+          // Darken outside
+          selCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+          selCtx.fillRect(0, 0, selectionCanvas.width, selectionCanvas.height);
+          
+          // Clear selected area
+          selCtx.clearRect(selX, selY, selW, selH);
+          
+          // Border
+          selCtx.strokeStyle = '#00cc88';
+          selCtx.lineWidth = 2;
+          selCtx.strokeRect(selX, selY, selW, selH);
+          
+          // Corner handles
+          const cs = 6;
+          selCtx.fillStyle = '#00cc88';
+          selCtx.fillRect(selX - cs/2, selY - cs/2, cs, cs);
+          selCtx.fillRect(selX + selW - cs/2, selY - cs/2, cs, cs);
+          selCtx.fillRect(selX - cs/2, selY + selH - cs/2, cs, cs);
+          selCtx.fillRect(selX + selW - cs/2, selY + selH - cs/2, cs, cs);
+        }
+        
+        selectionText.textContent = `Vùng: ${selW} x ${selH}`;
+      };
+      
+      selectionCanvas.onmouseup = () => {
+        isSelecting = false;
+      };
+    }
+
+    // Cancel selection
+    btnCancel.onclick = () => {
+      cleanupSelection();
+      status.textContent = "Đã hủy";
+      status.style.color = "#aaa";
+    };
+
+    // Capture selected region
+    btnCapture.onclick = async () => {
+      if (selW < 10 || selH < 10) {
+        status.textContent = "❌ Vùng chọn quá nhỏ";
+        status.style.color = "#ff4444";
+        return;
+      }
+      
+      await captureSelectedRegion();
+    };
+
+    async function captureSelectedRegion() {
       try {
         status.textContent = "📸 Đang xử lý ảnh chụp...";
         status.style.color = "#ffcc00";
-
-        // Set canvas size = video size
-        captureCanvas.width = captureVideo.videoWidth;
-        captureCanvas.height = captureVideo.videoHeight;
-
-        // Vẽ frame từ video vào canvas
-        const ctx = captureCanvas.getContext('2d');
-        ctx.drawImage(captureVideo, 0, 0);
-
+        
+        // Crop ảnh từ canvas gốc
+        const cropCanvas = document.createElement('canvas');
+        cropCanvas.width = selW;
+        cropCanvas.height = selH;
+        const cropCtx = cropCanvas.getContext('2d');
+        
+        // Vẽ vùng đã chọn
+        cropCtx.drawImage(captureVideo, selX, selY, selW, selH, 0, 0, selW, selH);
+        
         // Chuyển thành Blob
-        captureCanvas.toBlob(async (blob) => {
-          if (!blob) {
-            status.textContent = "❌ Lỗi khi xử lý ảnh";
-            status.style.color = "#ff4444";
-            return;
-          }
-
-          // Tạo file từ blob
-          const file = new File([blob], 'screenshot.png', { type: 'image/png' });
-
-          // Dừng stream
-          if (mediaStream) {
-            mediaStream.getTracks().forEach(track => track.stop());
-            mediaStream = null;
-          }
-          captureVideo.style.display = 'none';
-
-          // Preview ảnh
-          if (currentImageURL) URL.revokeObjectURL(currentImageURL);
-          currentImageURL = URL.createObjectURL(blob);
-          preview.innerHTML = `<img src="${currentImageURL}" alt="screenshot">`;
-
-          // OCR
-          status.textContent = "🔍 Đang nhận diện text...";
-          
-          const { data: { text } } = await Tesseract.recognize(
-            file,
-            'vie+eng',
-            {
-              logger: m => {
-                if (m.status === 'recognizing text') {
-                  status.textContent = `🔍 Đang nhận diện... ${Math.round(m.progress*100)}%`;
-                }
+        const blob = await new Promise(resolve => {
+          cropCanvas.toBlob(resolve, 'image/png');
+        });
+        
+        if (!blob) {
+          status.textContent = "❌ Lỗi khi xử lý ảnh";
+          status.style.color = "#ff4444";
+          cleanupSelection();
+          return;
+        }
+        
+        screenshotBlob = blob;
+        
+        // Dừng stream
+        if (mediaStream) {
+          mediaStream.getTracks().forEach(track => track.stop());
+          mediaStream = null;
+        }
+        
+        cleanupSelection();
+        
+        // Preview ảnh
+        if (currentImageURL) URL.revokeObjectURL(currentImageURL);
+        currentImageURL = URL.createObjectURL(blob);
+        preview.innerHTML = `<img src="${currentImageURL}" alt="screenshot">`;
+        
+        // OCR
+        status.textContent = "🔍 Đang nhận diện text...";
+        
+        const file = new File([blob], 'screenshot.png', { type: 'image/png' });
+        
+        const { data: { text } } = await Tesseract.recognize(
+          file,
+          'vie+eng',
+          {
+            logger: m => {
+              if (m.status === 'recognizing text') {
+                status.textContent = `🔍 Đang nhận diện... ${Math.round(m.progress*100)}%`;
               }
             }
-          );
-
-          resultText.value = text.replace(/\s+/g, ' ').trim() || "Không tìm thấy văn bản nào.";
-          status.textContent = "✅ Hoàn thành";
-          status.style.color = "#00dd88";
-        }, 'image/png');
-
+          }
+        );
+        
+        // Sử dụng hàm fixText mới - chỉ xuống dòng 1 lần
+        resultText.value = fixText(text) || "Không tìm thấy văn bản nào.";
+        status.textContent = "✅ Hoàn thành";
+        status.style.color = "#00dd88";
+        
       } catch (err) {
         console.error(err);
         status.textContent = "❌ Lỗi khi xử lý OCR";
         status.style.color = "#ff4444";
+        cleanupSelection();
       }
     }
 
+    function cleanupSelection() {
+      screenshotOverlay.style.display = 'none';
+      selectionCanvas.style.display = 'none';
+      selectionInfo.style.display = 'none';
+      selectionCanvas.style.pointerEvents = 'none';
+      isSelecting = false;
+    }
+
+    // File input handler
     fileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
       if (!file) return;
@@ -259,15 +452,13 @@
       status.textContent = "Đang xử lý...";
       status.style.color = "#ffcc00";
 
-      // Preview
       currentImageURL = URL.createObjectURL(file);
       preview.innerHTML = `<img src="${currentImageURL}" alt="preview">`;
 
       try {
-        // OCR using Tesseract.js
         const { data: { text } } = await Tesseract.recognize(
           file,
-          'vie+eng',  // hỗ trợ tiếng Việt + English
+          'vie+eng',
           {
             logger: m => {
               if (m.status === 'recognizing text') {
@@ -277,7 +468,7 @@
           }
         );
 
-        resultText.value = text.replace(/\s+/g, ' ').trim() || "Không tìm thấy văn bản nào.";
+        resultText.value = fixText(text) || "Không tìm thấy văn bản nào.";
         status.textContent = "✅ Hoàn thành";
         status.style.color = "#00dd88";
       } catch (err) {
