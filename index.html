@@ -43,6 +43,24 @@
     }
     .btn-primary:hover { background: #00b377; }
     
+    .btn-secondary {
+      background: #ff8800;
+      color: white;
+      width: 100%;
+      margin-bottom: 20px;
+    }
+    .btn-secondary:hover { background: #dd6600; }
+    
+    .btn-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 15px;
+    }
+    .btn-row button {
+      flex: 1;
+      margin: 0;
+    }
+    
     .preview {
       border: 2px dashed #666;
       border-radius: 12px;
@@ -89,7 +107,10 @@
   <div class="container">
     <h1>📸 OCR Nhận Diện Văn Bản Từ Ảnh</h1>
     
-    <button class="btn-primary" id="openBtn">📂 Mở Ảnh Từ Máy</button>
+    <div class="btn-row">
+      <button class="btn-primary" id="openBtn">📂 Mở Ảnh</button>
+      <button class="btn-secondary" id="screenshotBtn">📸 Screenshot</button>
+    </div>
     
     <p style="margin: 10px 0 5px 5px;">Ảnh Preview:</p>
     <div class="preview" id="preview">
@@ -108,19 +129,128 @@
   </div>
 
   <input type="file" id="fileInput" accept="image/*" style="display:none">
+  <canvas id="captureCanvas" style="display:none;"></canvas>
+  <video id="captureVideo" style="display:none;" autoplay></video>
 
   <script>
     const fileInput = document.getElementById('fileInput');
     const openBtn = document.getElementById('openBtn');
+    const screenshotBtn = document.getElementById('screenshotBtn');
     const preview = document.getElementById('preview');
     const resultText = document.getElementById('result');
     const copyBtn = document.getElementById('copyBtn');
     const clearBtn = document.getElementById('clearBtn');
     const status = document.getElementById('status');
+    const captureCanvas = document.getElementById('captureCanvas');
+    const captureVideo = document.getElementById('captureVideo');
 
     let currentImageURL = null;
+    let mediaStream = null;
 
     openBtn.addEventListener('click', () => fileInput.click());
+
+    // Screenshot functionality
+    screenshotBtn.addEventListener('click', async () => {
+      try {
+        status.textContent = "📸 Đang mở dialog chọn màn hình...";
+        status.style.color = "#ffcc00";
+        
+        // Yêu cầu quyền capture màn hình
+        mediaStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { displaySurface: 'browser' }, // Ưu tiên browser/tab
+          audio: false
+        });
+
+        // Gán stream vào video element
+        captureVideo.srcObject = mediaStream;
+        captureVideo.style.display = 'block';
+        
+        // Đợi video load xong
+        await new Promise(resolve => {
+          captureVideo.onloadedmetadata = resolve;
+        });
+        
+        // Chờ user dừng sharing (khi họ nhấn "Stop sharing" hoặc đóng tab)
+        mediaStream.getVideoTracks()[0].onended = async () => {
+          await captureFrame();
+        };
+        
+        status.textContent = "⏳ Đang chờ bạn chọn vùng và dừng chia sẻ...";
+        
+      } catch (err) {
+        console.error(err);
+        if (err.name !== 'NotAllowedError') {
+          status.textContent = "❌ Không thể capture màn hình";
+          status.style.color = "#ff4444";
+        } else {
+          status.textContent = "Đã hủy capture";
+          status.style.color = "#aaa";
+        }
+      }
+    });
+
+    async function captureFrame() {
+      try {
+        status.textContent = "📸 Đang xử lý ảnh chụp...";
+        status.style.color = "#ffcc00";
+
+        // Set canvas size = video size
+        captureCanvas.width = captureVideo.videoWidth;
+        captureCanvas.height = captureVideo.videoHeight;
+
+        // Vẽ frame từ video vào canvas
+        const ctx = captureCanvas.getContext('2d');
+        ctx.drawImage(captureVideo, 0, 0);
+
+        // Chuyển thành Blob
+        captureCanvas.toBlob(async (blob) => {
+          if (!blob) {
+            status.textContent = "❌ Lỗi khi xử lý ảnh";
+            status.style.color = "#ff4444";
+            return;
+          }
+
+          // Tạo file từ blob
+          const file = new File([blob], 'screenshot.png', { type: 'image/png' });
+
+          // Dừng stream
+          if (mediaStream) {
+            mediaStream.getTracks().forEach(track => track.stop());
+            mediaStream = null;
+          }
+          captureVideo.style.display = 'none';
+
+          // Preview ảnh
+          if (currentImageURL) URL.revokeObjectURL(currentImageURL);
+          currentImageURL = URL.createObjectURL(blob);
+          preview.innerHTML = `<img src="${currentImageURL}" alt="screenshot">`;
+
+          // OCR
+          status.textContent = "🔍 Đang nhận diện text...";
+          
+          const { data: { text } } = await Tesseract.recognize(
+            file,
+            'vie+eng',
+            {
+              logger: m => {
+                if (m.status === 'recognizing text') {
+                  status.textContent = `🔍 Đang nhận diện... ${Math.round(m.progress*100)}%`;
+                }
+              }
+            }
+          );
+
+          resultText.value = text.replace(/\s+/g, ' ').trim() || "Không tìm thấy văn bản nào.";
+          status.textContent = "✅ Hoàn thành";
+          status.style.color = "#00dd88";
+        }, 'image/png');
+
+      } catch (err) {
+        console.error(err);
+        status.textContent = "❌ Lỗi khi xử lý OCR";
+        status.style.color = "#ff4444";
+      }
+    }
 
     fileInput.addEventListener('change', async (e) => {
       const file = e.target.files[0];
