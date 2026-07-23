@@ -102,42 +102,56 @@
       font-weight: bold;
     }
     
-    /* Screenshot overlay */
-    #screenshotOverlay {
+    /* Crop overlay */
+    #cropOverlay {
       position: fixed;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
+      background: rgba(0,0,0,0.85);
       z-index: 9999;
-      cursor: crosshair;
+      display: none;
     }
     
-    #selectionCanvas {
+    #cropCanvas {
       position: fixed;
-      top: 0;
-      left: 0;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      max-width: 90%;
+      max-height: 70%;
       z-index: 10000;
+      cursor: crosshair;
+      box-shadow: 0 0 30px rgba(0,0,0,0.5);
+    }
+    
+    #cropSelectionCanvas {
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10001;
       pointer-events: none;
     }
     
-    .selection-info {
+    .crop-info {
       position: fixed;
       top: 20px;
       left: 50%;
       transform: translateX(-50%);
-      background: rgba(0,0,0,0.85);
+      background: rgba(0,0,0,0.9);
       color: white;
       padding: 12px 24px;
       border-radius: 8px;
       font-size: 14px;
-      z-index: 10001;
+      z-index: 10002;
       display: flex;
       gap: 15px;
       align-items: center;
     }
     
-    .selection-info button {
+    .crop-info button {
       padding: 8px 16px;
       border: none;
       border-radius: 6px;
@@ -145,12 +159,12 @@
       font-weight: bold;
     }
     
-    .btn-capture {
+    .btn-crop {
       background: #00cc88;
       color: white;
     }
     
-    .btn-cancel {
+    .btn-cancel-crop {
       background: #cc4444;
       color: white;
     }
@@ -185,13 +199,14 @@
   <canvas id="captureCanvas" style="display:none;"></canvas>
   <video id="captureVideo" style="display:none;" autoplay playsinline></video>
   
-  <!-- Screenshot selection elements -->
-  <div id="screenshotOverlay" style="display:none;"></div>
-  <canvas id="selectionCanvas" style="display:none;"></canvas>
-  <div class="selection-info" id="selectionInfo" style="display:none;">
-    <span id="selectionText">Vùng: 0 x 0</span>
-    <button class="btn-capture" id="btnCapture">📸 Chụp</button>
-    <button class="btn-cancel" id="btnCancel">✖ Hủy</button>
+  <!-- Crop selection elements -->
+  <div id="cropOverlay"></div>
+  <canvas id="cropCanvas"></canvas>
+  <canvas id="cropSelectionCanvas"></canvas>
+  <div class="crop-info" id="cropInfo" style="display:none;">
+    <span id="cropText">Vùng: 0 x 0</span>
+    <button class="btn-crop" id="btnCrop">✂️ Crop & OCR</button>
+    <button class="btn-cancel-crop" id="btnCancelCrop">✖ Hủy</button>
   </div>
 
   <script>
@@ -206,27 +221,30 @@
     const captureCanvas = document.getElementById('captureCanvas');
     const captureVideo = document.getElementById('captureVideo');
     
-    // Selection elements
-    const screenshotOverlay = document.getElementById('screenshotOverlay');
-    const selectionCanvas = document.getElementById('selectionCanvas');
-    const selectionInfo = document.getElementById('selectionInfo');
-    const selectionText = document.getElementById('selectionText');
-    const btnCapture = document.getElementById('btnCapture');
-    const btnCancel = document.getElementById('btnCancel');
+    // Crop elements
+    const cropOverlay = document.getElementById('cropOverlay');
+    const cropCanvas = document.getElementById('cropCanvas');
+    const cropSelectionCanvas = document.getElementById('cropSelectionCanvas');
+    const cropInfo = document.getElementById('cropInfo');
+    const cropText = document.getElementById('cropText');
+    const btnCrop = document.getElementById('btnCrop');
+    const btnCancelCrop = document.getElementById('btnCancelCrop');
 
     let currentImageURL = null;
     let mediaStream = null;
     let screenshotBlob = null;
-    let isSelecting = false;
-    let startX = 0, startY = 0;
-    let selX = 0, selY = 0, selW = 0, selH = 0;
-    let selCtx = null;
+    let fullImageBitmap = null;
+    
+    // Crop selection state
+    let isCropping = false;
+    let cropStartX = 0, cropStartY = 0;
+    let cropX = 0, cropY = 0, cropW = 0, cropH = 0;
+    let cropCtx = null;
+    let scaleX = 1, scaleY = 1;
+    let canvasLeft = 0, canvasTop = 0;
 
-    // Utility: Fix text - chỉ xuống dòng 1 lần như bình thường
+    // Utility: Fix text - bỏ khoảng trắng thừa và xuống dòng đúng
     function fixText(text) {
-      // Thay thế multiple spaces/tabs bằng 1 space
-      // Thay thế 2+ newlines liên tiếp bằng 1 newline
-      // Trim đầu và cuối
       return text
         .replace(/[ \t]+/g, ' ')           // multiple spaces/tabs → 1 space
         .replace(/\n{3,}/g, '\n\n')       // 3+ newlines → 2 newlines
@@ -236,46 +254,54 @@
 
     openBtn.addEventListener('click', () => fileInput.click());
 
-    // Screenshot functionality với region selection
+    // Screenshot - chụp full tab trước
     screenshotBtn.addEventListener('click', async () => {
       try {
         status.textContent = "📸 Đang mở dialog chọn màn hình...";
         status.style.color = "#ffcc00";
         
-        // Yêu cầu quyền capture màn hình
         mediaStream = await navigator.mediaDevices.getDisplayMedia({
           video: { displaySurface: 'any' },
           audio: false
         });
 
-        // Gán stream vào video element
         captureVideo.srcObject = mediaStream;
-        captureVideo.style.display = 'block';
         
-        // Đợi video load xong
         await new Promise(resolve => {
           captureVideo.onloadedmetadata = resolve;
         });
         
-        // Hiện overlay để chọn vùng
+        // Chụp full frame vào canvas
         captureCanvas.width = captureVideo.videoWidth;
         captureCanvas.height = captureVideo.videoHeight;
-        selectionCanvas.width = captureVideo.videoWidth;
-        selectionCanvas.height = captureVideo.videoHeight;
+        const ctx = captureCanvas.getContext('2d');
+        ctx.drawImage(captureVideo, 0, 0);
         
-        // Vẽ ảnh lên canvas
-        selCtx = selectionCanvas.getContext('2d');
-        selCtx.drawImage(captureVideo, 0, 0);
+        // Lưu blob
+        screenshotBlob = await new Promise(resolve => {
+          captureCanvas.toBlob(resolve, 'image/png');
+        });
         
-        // Hiện overlay và controls
-        screenshotOverlay.style.display = 'block';
-        selectionCanvas.style.display = 'block';
-        selectionInfo.style.display = 'flex';
+        // Dừng stream
+        mediaStream.getTracks().forEach(track => track.stop());
+        mediaStream = null;
+        captureVideo.style.display = 'none';
         
-        // Setup selection events
-        setupSelection();
+        if (!screenshotBlob) {
+          status.textContent = "❌ Lỗi khi chụp màn hình";
+          status.style.color = "#ff4444";
+          return;
+        }
         
-        status.textContent = "🖱️ Kéo chọn vùng cần chụp";
+        // Preview full ảnh
+        if (currentImageURL) URL.revokeObjectURL(currentImageURL);
+        currentImageURL = URL.createObjectURL(screenshotBlob);
+        preview.innerHTML = `<img src="${currentImageURL}" alt="screenshot">`;
+        
+        // Mở crop overlay
+        await openCropOverlay(screenshotBlob);
+        
+        status.textContent = "✂️ Kéo chọn vùng để crop hoặc nhấn 'Crop & OCR' để OCR toàn bộ";
         
       } catch (err) {
         console.error(err);
@@ -289,127 +315,181 @@
       }
     });
 
-    function setupSelection() {
-      selectionCanvas.style.pointerEvents = 'auto';
+    async function openCropOverlay(blob) {
+      // Load ảnh
+      const img = new Image();
+      img.src = URL.createObjectURL(blob);
+      await new Promise(resolve => { img.onload = resolve; });
       
-      selectionCanvas.onmousedown = (e) => {
-        isSelecting = true;
-        startX = e.clientX;
-        startY = e.clientY;
-        selX = startX;
-        selY = startY;
-        selW = 0;
-        selH = 0;
+      // Setup canvas crop
+      const maxW = window.innerWidth * 0.9;
+      const maxH = window.innerHeight * 0.7;
+      let w = img.width, h = img.height;
+      
+      if (w > maxW) {
+        h = h * (maxW / w);
+        w = maxW;
+      }
+      if (h > maxH) {
+        w = w * (maxH / h);
+        h = maxH;
+      }
+      
+      cropCanvas.width = w;
+      cropCanvas.height = h;
+      cropSelectionCanvas.width = w;
+      cropSelectionCanvas.height = h;
+      
+      const ctx = cropCanvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      
+      // Tính scale để convert pixel khi crop
+      scaleX = img.width / w;
+      scaleY = img.height / h;
+      
+      // Lấy vị trí canvas trên màn hình
+      const rect = cropCanvas.getBoundingClientRect();
+      canvasLeft = rect.left;
+      canvasTop = rect.top;
+      
+      // Setup selection
+      cropCtx = cropSelectionCanvas.getContext('2d');
+      cropSelectionCanvas.style.pointerEvents = 'none';
+      
+      // Hiện overlay
+      cropOverlay.style.display = 'block';
+      cropSelectionCanvas.style.display = 'block';
+      cropInfo.style.display = 'flex';
+      
+      // Events
+      cropCanvas.style.pointerEvents = 'auto';
+      
+      cropCanvas.onmousedown = (e) => {
+        isCropping = true;
+        cropStartX = e.clientX - canvasLeft;
+        cropStartY = e.clientY - canvasTop;
+        cropX = cropStartX;
+        cropY = cropStartY;
+        cropW = 0;
+        cropH = 0;
+        cropSelectionCanvas.style.pointerEvents = 'auto';
       };
       
-      selectionCanvas.onmousemove = (e) => {
-        if (!isSelecting) return;
+      cropCanvas.onmousemove = (e) => {
+        if (!isCropping) return;
         
-        selW = e.clientX - startX;
-        selH = e.clientY - startY;
-        selX = selW < 0 ? e.clientX : startX;
-        selY = selH < 0 ? e.clientY : startY;
-        selW = Math.abs(selW);
-        selH = Math.abs(selH);
+        cropW = e.clientX - canvasLeft - cropStartX;
+        cropH = e.clientY - canvasTop - cropStartY;
+        cropX = cropW < 0 ? e.clientX - canvasLeft : cropStartX;
+        cropY = cropH < 0 ? e.clientY - canvasTop : cropStartY;
+        cropW = Math.abs(cropW);
+        cropH = Math.abs(cropH);
         
-        // Redraw
-        selCtx.clearRect(0, 0, selectionCanvas.width, selectionCanvas.height);
-        selCtx.drawImage(captureVideo, 0, 0);
-        
-        // Vẽ vùng chọn
-        if (selW > 0 && selH > 0) {
-          // Darken outside
-          selCtx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-          selCtx.fillRect(0, 0, selectionCanvas.width, selectionCanvas.height);
-          
-          // Clear selected area
-          selCtx.clearRect(selX, selY, selW, selH);
-          
-          // Border
-          selCtx.strokeStyle = '#00cc88';
-          selCtx.lineWidth = 2;
-          selCtx.strokeRect(selX, selY, selW, selH);
-          
-          // Corner handles
-          const cs = 6;
-          selCtx.fillStyle = '#00cc88';
-          selCtx.fillRect(selX - cs/2, selY - cs/2, cs, cs);
-          selCtx.fillRect(selX + selW - cs/2, selY - cs/2, cs, cs);
-          selCtx.fillRect(selX - cs/2, selY + selH - cs/2, cs, cs);
-          selCtx.fillRect(selX + selW - cs/2, selY + selH - cs/2, cs, cs);
+        drawCropSelection();
+      };
+      
+      cropCanvas.onmouseup = () => {
+        isCropping = false;
+        if (cropW > 5 && cropH > 5) {
+          cropText.textContent = `Vùng: ${Math.round(cropW)} x ${Math.round(cropH)}`;
         }
-        
-        selectionText.textContent = `Vùng: ${selW} x ${selH}`;
       };
       
-      selectionCanvas.onmouseup = () => {
-        isSelecting = false;
+      cropCanvas.onmouseleave = () => {
+        isCropping = false;
       };
     }
 
-    // Cancel selection
-    btnCancel.onclick = () => {
-      cleanupSelection();
-      status.textContent = "Đã hủy";
+    function drawCropSelection() {
+      cropCtx.clearRect(0, 0, cropSelectionCanvas.width, cropSelectionCanvas.height);
+      
+      if (cropW < 5 || cropH < 5) return;
+      
+      // Border
+      cropCtx.strokeStyle = '#00cc88';
+      cropCtx.lineWidth = 2;
+      cropCtx.strokeRect(cropX, cropY, cropW, cropH);
+      
+      // Corner handles
+      const cs = 6;
+      cropCtx.fillStyle = '#00cc88';
+      cropCtx.fillRect(cropX - cs/2, cropY - cs/2, cs, cs);
+      cropCtx.fillRect(cropX + cropW - cs/2, cropY - cs/2, cs, cs);
+      cropCtx.fillRect(cropX - cs/2, cropY + cropH - cs/2, cs, cs);
+      cropCtx.fillRect(cropX + cropW - cs/2, cropY + cropH - cs/2, cs, cs);
+      
+      cropText.textContent = `Vùng: ${Math.round(cropW)} x ${Math.round(cropH)}`;
+    }
+
+    btnCancelCrop.onclick = () => {
+      closeCropOverlay();
+      status.textContent = "Đã hủy crop - Ảnh full vẫn ở preview";
       status.style.color = "#aaa";
     };
 
-    // Capture selected region
-    btnCapture.onclick = async () => {
-      if (selW < 10 || selH < 10) {
-        status.textContent = "❌ Vùng chọn quá nhỏ";
-        status.style.color = "#ff4444";
-        return;
+    btnCrop.onclick = async () => {
+      if (cropW > 5 && cropH > 5) {
+        // Crop vùng đã chọn
+        await cropAndOCR();
+      } else {
+        // OCR toàn bộ ảnh
+        await ocrFullImage();
       }
-      
-      await captureSelectedRegion();
     };
 
-    async function captureSelectedRegion() {
+    async function cropAndOCR() {
       try {
-        status.textContent = "📸 Đang xử lý ảnh chụp...";
+        status.textContent = "✂️ Đang crop vùng chọn...";
         status.style.color = "#ffcc00";
         
-        // Crop ảnh từ canvas gốc
-        const cropCanvas = document.createElement('canvas');
-        cropCanvas.width = selW;
-        cropCanvas.height = selH;
-        const cropCtx = cropCanvas.getContext('2d');
+        // Crop từ ảnh gốc (screenshotBlob)
+        const img = new Image();
+        img.src = URL.createObjectURL(screenshotBlob);
+        await new Promise(resolve => { img.onload = resolve; });
         
-        // Vẽ vùng đã chọn
-        cropCtx.drawImage(captureVideo, selX, selY, selW, selH, 0, 0, selW, selH);
+        const realX = Math.round(cropX * scaleX);
+        const realY = Math.round(cropY * scaleY);
+        const realW = Math.round(cropW * scaleX);
+        const realH = Math.round(cropH * scaleY);
         
-        // Chuyển thành Blob
-        const blob = await new Promise(resolve => {
-          cropCanvas.toBlob(resolve, 'image/png');
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = realW;
+        tempCanvas.height = realH;
+        const tempCtx = tempCanvas.getContext('2d');
+        tempCtx.drawImage(img, realX, realY, realW, realH, 0, 0, realW, realH);
+        
+        const cropBlob = await new Promise(resolve => {
+          tempCanvas.toBlob(resolve, 'image/png');
         });
         
-        if (!blob) {
-          status.textContent = "❌ Lỗi khi xử lý ảnh";
-          status.style.color = "#ff4444";
-          cleanupSelection();
-          return;
-        }
+        closeCropOverlay();
         
-        screenshotBlob = blob;
-        
-        // Dừng stream
-        if (mediaStream) {
-          mediaStream.getTracks().forEach(track => track.stop());
-          mediaStream = null;
-        }
-        
-        cleanupSelection();
-        
-        // Preview ảnh
+        // Preview vùng đã crop
         if (currentImageURL) URL.revokeObjectURL(currentImageURL);
-        currentImageURL = URL.createObjectURL(blob);
-        preview.innerHTML = `<img src="${currentImageURL}" alt="screenshot">`;
+        currentImageURL = URL.createObjectURL(cropBlob);
+        preview.innerHTML = `<img src="${currentImageURL}" alt="cropped">`;
         
-        // OCR
+        await performOCR(cropBlob);
+        
+      } catch (err) {
+        console.error(err);
+        status.textContent = "❌ Lỗi khi crop ảnh";
+        status.style.color = "#ff4444";
+        closeCropOverlay();
+      }
+    }
+
+    async function ocrFullImage() {
+      closeCropOverlay();
+      await performOCR(screenshotBlob);
+    }
+
+    async function performOCR(blob) {
+      try {
         status.textContent = "🔍 Đang nhận diện text...";
+        status.style.color = "#ffcc00";
         
-        const file = new File([blob], 'screenshot.png', { type: 'image/png' });
+        const file = new File([blob], 'ocr.png', { type: 'image/png' });
         
         const { data: { text } } = await Tesseract.recognize(
           file,
@@ -423,7 +503,6 @@
           }
         );
         
-        // Sử dụng hàm fixText mới - chỉ xuống dòng 1 lần
         resultText.value = fixText(text) || "Không tìm thấy văn bản nào.";
         status.textContent = "✅ Hoàn thành";
         status.style.color = "#00dd88";
@@ -432,16 +511,24 @@
         console.error(err);
         status.textContent = "❌ Lỗi khi xử lý OCR";
         status.style.color = "#ff4444";
-        cleanupSelection();
       }
     }
 
-    function cleanupSelection() {
-      screenshotOverlay.style.display = 'none';
-      selectionCanvas.style.display = 'none';
-      selectionInfo.style.display = 'none';
-      selectionCanvas.style.pointerEvents = 'none';
-      isSelecting = false;
+    function closeCropOverlay() {
+      cropOverlay.style.display = 'none';
+      cropSelectionCanvas.style.display = 'none';
+      cropInfo.style.display = 'none';
+      cropCanvas.style.pointerEvents = 'none';
+      cropSelectionCanvas.style.pointerEvents = 'none';
+      isCropping = false;
+      cropW = 0;
+      cropH = 0;
+      
+      // Cleanup events
+      cropCanvas.onmousedown = null;
+      cropCanvas.onmousemove = null;
+      cropCanvas.onmouseup = null;
+      cropCanvas.onmouseleave = null;
     }
 
     // File input handler
