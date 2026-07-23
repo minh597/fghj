@@ -243,12 +243,12 @@
     let scaleX = 1, scaleY = 1;
     let canvasLeft = 0, canvasTop = 0;
 
-    // Utility: Fix text - bỏ khoảng trắng thừa và xuống dòng đúng
+    // Utility: Fix text - xóa dòng trắng và khoảng trắng thừa
     function fixText(text) {
       return text
+        .replace(/\n\s*\n/g, '\n')         // xóa dòng trắng (dòng chỉ có space/tab)
+        .replace(/\n{2,}/g, '\n')         // 2+ newlines → 1 newline
         .replace(/[ \t]+/g, ' ')           // multiple spaces/tabs → 1 space
-        .replace(/\n{3,}/g, '\n\n')       // 3+ newlines → 2 newlines
-        .replace(/ *\n */g, '\n')         // spaces trước/sau newline
         .trim();
     }
 
