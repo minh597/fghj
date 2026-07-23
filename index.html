@@ -147,7 +147,7 @@
           }
         );
 
-        resultText.value = text.trim() || "Không tìm thấy văn bản nào.";
+        resultText.value = text.replace(/\s+/g, ' ').trim() || "Không tìm thấy văn bản nào.";
         status.textContent = "✅ Hoàn thành";
         status.style.color = "#00dd88";
       } catch (err) {
